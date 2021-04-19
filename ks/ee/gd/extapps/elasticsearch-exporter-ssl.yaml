@@ -1,0 +1,190 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: elasticsearch-exporter
+  name: elasticsearch-exporter
+  namespace: kubesphere-logging-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: elasticsearch-exporter
+  template:
+    metadata:
+      labels:
+        app: elasticsearch-exporter
+    spec:
+      volumes:
+        - name: secret-es-client-certs
+          secret:
+            secretName: secret-es-client-certs
+      containers:
+      - command:
+        - elasticsearch_exporter
+        - --es.uri=http://elasticsearch-logging-data.kubesphere-logging-system.svc:9200
+        - --es.all
+        - --es.indices
+        - --es.indices_settings
+        - --es.shards
+        - --es.snapshots
+        - --es.timeout=30s
+        - --web.listen-address=:9108
+        - --web.telemetry-path=/metrics
+        - --es.ca=/etc/es-exporter/secrets/secret-es-client-certs/es-client-ca.crt
+        - --es.client-private-key=/etc/es-exporter/secrets/secret-es-client-certs/es-client.key
+        - --es.client-cert=/etc/es-exporter/secrets/secret-es-client-certs/es-client.crt
+        image: justwatch/elasticsearch_exporter:1.1.0
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+          - mountPath: /etc/es-exporter/secrets/secret-es-client-certs
+            name: secret-es-client-certs
+            readOnly: true
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - /bin/bash
+              - -c
+              - sleep 20
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /healthz
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 5
+        name: elasticsearch-exporter
+        ports:
+        - containerPort: 9108
+          name: http
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /healthz
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 1
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 5
+        resources:
+          limits:
+            cpu: 400m
+            memory: 512Mi
+          requests:
+            cpu: 50m
+            memory: 128Mi
+        securityContext:
+          capabilities:
+            drop:
+            - SETPCAP
+            - MKNOD
+            - AUDIT_WRITE
+            - CHOWN
+            - NET_RAW
+            - DAC_OVERRIDE
+            - FOWNER
+            - FSETID
+            - KILL
+            - SETGID
+            - SETUID
+            - NET_BIND_SERVICE
+            - SYS_CHROOT
+            - SETFCAP
+          readOnlyRootFilesystem: true
+      restartPolicy: Always
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: elasticsearch-exporter
+  name: elasticsearch-exporter
+  namespace: kubesphere-logging-system
+spec:
+  ports:
+    - name: http
+      port: 9108
+      protocol: TCP
+      targetPort: 9108
+  selector:
+    app: elasticsearch-exporter
+  type: ClusterIP
+
+---
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  labels:
+    app: elasticsearch-exporter
+    app.kubernetes.io/vendor: kubesphere
+  name: elasticsearch-exporter
+  namespace: kubesphere-logging-system
+spec:
+  endpoints:
+    - honorLabels: true
+      interval: 10s
+      path: /metrics
+      port: http
+      scheme: http
+      scrapeTimeout: 10s
+  namespaceSelector:
+    matchNames:
+      - kubesphere-logging-system
+  selector:
+    matchLabels:
+      app: elasticsearch-exporter
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    prometheus: k8s
+    role: alert-rules
+  name: elasticsearch-exporter
+  namespace: kubesphere-monitoring-system
+spec:
+  groups:
+    - name: elasticsearch-exporter
+      rules:
+        - alert: ElasticsearchFilesystemTooHigh
+          annotations:
+            description: The filesystem usage is over 90% for 10m
+            summary: ElasticSearch node {{ $labels.node }} filesystem usage is high
+          expr: |
+            (elasticsearch_filesystem_data_size_bytes{job="elasticsearch-exporter"} - elasticsearch_filesystem_data_free_bytes{job="elasticsearch-exporter"})
+                        / elasticsearch_filesystem_data_size_bytes{job="elasticsearch-exporter"} > 0.9
+          for: 10m
+          labels:
+            severity: critical
+        - alert: ElasticsearchTooFewNodesRunning
+          annotations:
+            description: There are only {{ $value }} < 3 ElasticSearch nodes running
+            summary: ElasticSearch running on less than 3 nodes
+          expr: elasticsearch_cluster_health_number_of_nodes{job="elasticsearch-exporter"}
+            < 3
+          for: 5m
+          labels:
+            severity: critical
+        - alert: ElasticsearchHeapTooHigh
+          annotations:
+            description: The heap usage is over 90% for 15m
+            summary: ElasticSearch node {{ $labels.node }} heap usage is high
+          expr: |
+            elasticsearch_jvm_memory_used_bytes{job="elasticsearch-exporter", area="heap"} / elasticsearch_jvm_memory_max_bytes{job="elasticsearch-exporter", area="heap"}
+            > 0.9
+          for: 15m
+          labels:
+            severity: critical

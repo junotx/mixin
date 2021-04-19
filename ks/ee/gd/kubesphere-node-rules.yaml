@@ -1,0 +1,110 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    prometheus: k8s
+    role: alert-rules
+  name: kubesphere-node-rules
+  namespace: kubesphere-monitoring-system
+spec:
+  groups:
+  - name: etcd-node.rules
+    rules: 
+    - expr: | 
+        count by (node) (label_replace(sum by(cpu, instance, job, namespace) (node_cpu_seconds_total{job="node-exporter-external"}), "node", "$1", "instance", "(.*):.*"))
+      record: etcd_node:node_num_cpu:sum
+    - expr: |
+        avg by (node) (label_replace(sum by(cpu, instance, job, namespace) (irate(node_cpu_seconds_total{job="node-exporter-external", mode=~"user|nice|system|iowait|irq|softirq"}[5m])), "node", "$1", "instance", "(.*):.*"))
+      record: etcd_node:node_cpu_utilisation:mean5m
+    - expr: |
+        sum by (node) (label_replace(node_memory_MemFree_bytes{job="node-exporter-external"} + node_memory_Cached_bytes{job="node-exporter-external"} + node_memory_Buffers_bytes{job="node-exporter-external"} + node_memory_SReclaimable_bytes{job="node-exporter-external"}, "node", "$1", "instance", "(.*):.*"))
+      record: etcd_node:node_memory_bytes_available:sum
+    - expr: |
+        sum by (node) (label_replace(node_memory_MemTotal_bytes{job="node-exporter-external"}, "node", "$1", "instance", "(.*):.*"))
+      record: etcd_node:node_memory_bytes_total:sum
+    - expr: |
+        1 - (etcd_node:node_memory_bytes_available:sum / etcd_node:node_memory_bytes_total:sum)
+      record: 'etcd_node:node_memory_utilisation:'
+  - name: elk-node.rules
+    rules: 
+    - expr: | 
+        count by (node) (label_replace(sum by(cpu, instance, job, namespace) (node_cpu_seconds_total{job="elk-node-exporter-external"}), "node", "$1", "instance", "(.*):.*"))
+      record: elk_node:node_num_cpu:sum
+    - expr: |
+        avg by (node) (label_replace(sum by(cpu, instance, job, namespace) (irate(node_cpu_seconds_total{job="elk-node-exporter-external", mode=~"user|nice|system|iowait|irq|softirq"}[5m])), "node", "$1", "instance", "(.*):.*"))
+      record: elk_node:node_cpu_utilisation:mean5m
+    - expr: |
+        sum by (node) (label_replace(node_memory_MemFree_bytes{job="elk-node-exporter-external"} + node_memory_Cached_bytes{job="elk-node-exporter-external"} + node_memory_Buffers_bytes{job="elk-node-exporter-external"} + node_memory_SReclaimable_bytes{job="elk-node-exporter-external"}, "node", "$1", "instance", "(.*):.*"))
+      record: elk_node:node_memory_bytes_available:sum
+    - expr: |
+        sum by (node) (label_replace(node_memory_MemTotal_bytes{job="elk-node-exporter-external"}, "node", "$1", "instance", "(.*):.*"))
+      record: elk_node:node_memory_bytes_total:sum
+    - expr: |
+        1 - (elk_node:node_memory_bytes_available:sum / elk_node:node_memory_bytes_total:sum)
+      record: 'elk_node:node_memory_utilisation:'
+  - name: etcd-node-resources
+    rules: 
+    - alert: EtcdNodeCpuUtilisationHigh
+      expr: |
+        etcd_node:node_cpu_utilisation:mean5m > 0.8
+      annotations:
+        summary: Etcd node cpu utilisation is high
+        message: |
+          Etcd node {{ $labels.node }} is using {{ $value | humanizePercentage }} of its cpu.
+      for: 10m
+      labels: 
+        severity: warning
+    - alert: EtcdNodeMemoryUtilisationHigh
+      expr: |
+        etcd_node:node_memory_utilisation: > 0.8
+      annotations:
+        summary: Etcd node memory utilisation is high
+        message: |
+          Etcd node {{ $labels.node }} is using {{ $value | humanizePercentage }} of its memory.
+      for: 10m
+      labels: 
+        severity: warning
+  - name: elk-node-resources
+    rules: 
+    - alert: ElkNodeCpuUtilisationHigh
+      expr: |
+        elk_node:node_cpu_utilisation:mean5m > 0.8
+      annotations:
+        summary: ELK node cpu utilisation is high
+        message: |
+          ELK node {{ $labels.node }} is using {{ $value | humanizePercentage }} of its cpu.
+      for: 10m
+      labels: 
+        severity: warning
+    - alert: ElkNodeMemoryUtilisationHigh
+      expr: |
+        elk_node:node_memory_utilisation: > 0.8
+      annotations:
+        summary: ELK node memory utilisation is high
+        message: |
+          ELK node {{ $labels.node }} is using {{ $value | humanizePercentage }} of its memory.
+      for: 10m
+      labels: 
+        severity: warning
+  - name: node-resources
+    rules: 
+    - alert: NodeCpuUtilisationHigh
+      expr: |
+        node:node_cpu_utilisation:avg1m > 0.8
+      annotations:
+        summary: node cpu utilisation is high
+        message: |
+          Node {{ $labels.node }} ({{ $labels.host_ip }}) is using {{ $value | humanizePercentage }} of its cpu.
+      for: 10m
+      labels: 
+        severity: warning
+    - alert: NodeMemoryUtilisationHigh
+      expr: |
+        node:node_memory_utilisation: > 0.8
+      annotations:
+        summary: node memory utilisation is high
+        message: |
+          Node {{ $labels.node }} ({{ $labels.host_ip }}) is using {{ $value | humanizePercentage }} of its memory.
+      for: 10m
+      labels: 
+        severity: warning

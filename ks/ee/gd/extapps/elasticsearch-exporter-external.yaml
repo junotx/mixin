@@ -1,0 +1,100 @@
+apiVersion: v1
+kind: Endpoints
+metadata:
+  labels:
+    app.kubernetes.io/name: elasticsearch-exporter-external
+  name: elasticsearch-exporter-external
+  namespace: kubesphere-logging-system
+subsets:
+  - addresses:
+      - ip: 192.168.1.3
+    ports:
+      - name: http
+        port: 9108
+        protocol: TCP
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/name: elasticsearch-exporter-external
+  name: elasticsearch-exporter-external
+  namespace: kubesphere-logging-system
+spec:
+  clusterIP: None
+  ports:
+    - name: http
+      port: 9108
+      protocol: TCP
+      targetPort: 9108
+  selector: null
+
+---
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  labels:
+    app.kubernetes.io/name: elasticsearch-exporter-external
+    app.kubernetes.io/vendor: kubesphere
+  name: elasticsearch-exporter-external
+  namespace: kubesphere-logging-system
+spec:
+  endpoints:
+    - honorLabels: true
+      interval: 10s
+      path: /metrics
+      port: http
+      scheme: http
+      scrapeTimeout: 10s
+  namespaceSelector:
+    matchNames:
+      - kubesphere-logging-system
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: elasticsearch-exporter-external
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    prometheus: k8s
+    role: alert-rules
+  name: elasticsearch-exporter-external
+  namespace: kubesphere-monitoring-system
+spec:
+  groups:
+    - name: elasticsearch-exporter-external
+      rules:
+        - alert: ElasticsearchFilesystemTooHigh
+          annotations:
+            description: The filesystem usage is over 90% for 10m
+            summary: ElasticSearch node {{ $labels.node }} filesystem usage is high
+          expr: |
+            (elasticsearch_filesystem_data_size_bytes{job="elasticsearch-exporter-external"} - elasticsearch_filesystem_data_free_bytes{job="elasticsearch-exporter-external"})
+                        / elasticsearch_filesystem_data_size_bytes{job="elasticsearch-exporter-external"} > 0.9
+          for: 10m
+          labels:
+            severity: critical
+        - alert: ElasticsearchTooFewNodesRunning
+          annotations:
+            description: There are only {{ $value }} < 3 ElasticSearch nodes running
+            summary: ElasticSearch running on less than 3 nodes
+          expr: elasticsearch_cluster_health_number_of_nodes{job="elasticsearch-exporter-external"}
+            < 3
+          for: 5m
+          labels:
+            severity: critical
+        - alert: ElasticsearchHeapTooHigh
+          annotations:
+            description: The heap usage is over 90% for 15m
+            summary: ElasticSearch node {{ $labels.node }} heap usage is high
+          expr: |
+            elasticsearch_jvm_memory_used_bytes{job="elasticsearch-exporter-external", area="heap"} / elasticsearch_jvm_memory_max_bytes{job="elasticsearch-exporter-external", area="heap"}
+            > 0.9
+          for: 15m
+          labels:
+            severity: critical
