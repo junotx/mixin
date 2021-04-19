@@ -1,0 +1,21 @@
+# build site
+
+FROM klakegg/hugo:0.95.0-ext-alpine as builder
+
+RUN apk update && apk add --no-cache git && \
+    apk add --no-cache make && \
+    apk add --no-cache bash && \
+    apk add --no-cache gcc && \
+    apk add --no-cache libc-dev && \
+    apk add --no-cache binutils-gold
+
+WORKDIR /workspace
+RUN git clone --depth 1 https://github.com/prometheus-operator/runbooks.git .
+RUN git submodule init && git submodule update
+RUN hugo
+
+
+# run site
+
+FROM nginx:alpine
+COPY --from=builder public/ /usr/share/nginx/html/

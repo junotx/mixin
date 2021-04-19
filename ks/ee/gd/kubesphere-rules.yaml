@@ -1,0 +1,123 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    custom-alerting-rule-level: cluster
+    role: thanos-alerting-rules
+    thanosruler: thanos-ruler
+  name: kubesphere-rules
+  namespace: kubesphere-monitoring-system
+spec:
+  groups:
+  - name: kubesphere
+    rules:
+    - alert: container-cpu-utilization-high
+      annotations:
+        summary: container cpu usage is more than 80% of the limit
+        message: |
+          {{ $value }}% cpu utilization of limit for pod {{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container}}.
+      expr: |
+        100 * irate(container_cpu_usage_seconds_total{job="kubelet",pod!="",image!="",container!~"|POD",${metricNsFilter}}[5m]) / on(namespace,pod,container) kube_pod_container_resource_limits{resource="cpu",${metricNsFilter}} > 80
+      for: 10m
+      labels:
+        severity: warning
+    - alert: container-cpu-running-full
+      annotations:
+        summary: container cpu usage will run full
+        message: |
+          pod {{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container}} with {{ $value }}% cpu utilization will hit the limit.
+      expr: |
+        100 * irate(container_cpu_usage_seconds_total{job="kubelet",pod!="",image!="",container!~"|POD",${metricNsFilter}}[5m]) / on(namespace,pod,container) kube_pod_container_resource_limits{resource="cpu",${metricNsFilter}} > 90
+      for: 5m
+      labels:
+        severity: critical
+    - alert: container-memory-utilization-high
+      annotations:
+        summary: container memory usage is more than 80% of the limit
+        message: |
+          {{ $value | humanizePercentage }} memory utilization of limit for pod {{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container}}.
+      expr: |
+        container_memory_working_set_bytes{job="kubelet",pod!="",image!="",container!~"|POD",${metricNsFilter}} / on(namespace,pod,container) kube_pod_container_resource_limits{resource="memory",${metricNsFilter}} > 0.8
+      for: 10m
+      labels:
+        severity: warning
+    - alert: container-memory-running-full
+      annotations:
+        summary: container memory usage will run full
+        message: |
+          pod {{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container}} with {{ $value | humanizePercentage }} memory utilization will hit the limit.
+      expr: |
+        container_memory_working_set_bytes{job="kubelet",pod!="",image!="",container!~"|POD",${metricNsFilter}} / on(namespace,pod,container) kube_pod_container_resource_limits{resource="memory",${metricNsFilter}} > 0.9
+      for: 5m
+      labels:
+        severity: critical
+  - name: ks-apiserver
+    rules:
+    - alert: ks-api-slow
+      annotations:
+        summary: requests to ks-apiserver are slow
+        message: |
+          requests to {{ $labels.verb }} resource(s) <group:{{ $labels.group }},version:{{ $labels.version }},resource:{{ $labels.resource }}> are taking {{ $value }}s on ks-apiserver instance "{{ $labels.instance }}"
+      expr: |
+        histogram_quantile(0.99, sum by(instance,group,resource,verb,version,le) (rate(ks_server_request_duration_seconds_bucket{job="ks-apiserver",group!="terminal.kubesphere.io"}[5m]))) > 5
+      for: 5m
+      labels:
+        severity: warning
+  - name: thanos
+    rules:
+    - alert: thanos-ruler-bad-config
+      annotations:
+        summary: Failed Thanos ruler configuration reload.
+        message: Thanos ruler {{$labels.namespace}}/{{$labels.pod}} has failed to reload its configuration.
+      expr: |
+        max_over_time(thanos_rule_config_last_reload_successful{job="thanos-ruler-operated",namespace="kubesphere-monitoring-system"}[5m]) == 0
+      for: 10m
+      labels: 
+        severity: critical
+    - alert: thanos-ruler-alert-queue-running-full
+      annotations:
+        summary: Thanos ruler alert queue predicted to run full in less than 30m.
+        message: Alert queue of Thanos ruler {{$labels.namespace}}/{{$labels.pod}} is running full.
+      expr: |
+        (predict_linear(thanos_alert_queue_length{job="thanos-ruler-operated",namespace="kubesphere-monitoring-system"}[5m], 60 * 30) > min_over_time(thanos_alert_queue_capacity{job="thanos-ruler-operated",namespace="kubesphere-monitoring-system"}[5m]))
+      for: 15m
+      labels: 
+        severity: warning
+    - alert: thanos-ruler-error-send-alerts-to-some-alertmanangers
+      annotations:
+        summary: Thanos ruler has encountered more than 1% errors sending alerts to a specific Alertmanager.
+        message: |
+          {{ printf "%.1f" $value }}% errors while sending alerts from Thanos ruler {{$labels.namespace}}/{{$labels.pod}} to Alertmanager {{$labels.alertmanager}}.
+      expr: |
+        (rate(thanos_alert_sender_alerts_dropped_total{job="thanos-ruler-operated",namespace="kubesphere-monitoring-system"}[5m]) / rate(thanos_alert_sender_alerts_sent_total{job="thanos-ruler-operated",namespace="kubesphere-monitoring-system"}[5m])) * 100 > 1
+      for: 15m
+      labels: 
+        severity: warning
+    - alert: thanos-ruler-error-send-alerts-to-any-alertmanangers
+      annotations:
+        summary: Thanos ruler encounters more than 3% errors sending alerts to any Alertmanager.
+        message: |
+          {{ printf "%.1f" $value }}% minimum errors while sending alerts from Thanos ruler {{$labels.namespace}}/{{$labels.pod}} to any Alertmanager.
+      expr: |
+        min without(alertmanager) (rate(thanos_alert_sender_alerts_dropped_total{job="thanos-ruler-operated",namespace="kubesphere-monitoring-system"}[5m]) / rate(thanos_alert_sender_alerts_sent_total{job="thanos-ruler-operated",namespace="kubesphere-monitoring-system"}[5m])) * 100 > 3
+      for: 15m
+      labels: 
+        severity: critical
+    - alert: thanos-ruler-rule-failures
+      annotations:
+        summary: Thanos ruler is failing rule evaluations.
+        message: Thanos ruler {{$labels.namespace}}/{{$labels.pod}} has failed to evaluate {{ printf "%.0f" $value }} rules in the last 5m.
+      expr: |
+        increase(thanos_rule_evaluation_with_warnings_total{job="thanos-ruler-operated",namespace="kubesphere-monitoring-system"}[5m]) > 0
+      for: 15m
+      labels: 
+        severity: critical
+    - alert: thanos-ruler-missing-rule-evaluations
+      annotations:
+        summary: Thanos ruler is missing rule evaluations due to slow rule group evaluation.
+        message: Thanos ruler {{$labels.namespace}}/{{$labels.pod}} has missed {{ printf "%.0f" $value }} rule group evaluations in the last 5m.
+      expr: |
+        increase(prometheus_rule_group_iterations_missed_total{job="thanos-ruler-operated",namespace="kubesphere-monitoring-system"}[5m]) > 0
+      for: 15m
+      labels: 
+        severity: warning

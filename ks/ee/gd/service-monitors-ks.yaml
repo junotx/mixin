@@ -1,0 +1,46 @@
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  labels:
+    app.kubernetes.io/vendor: kubesphere
+    app: ks-apiserver
+  name: ks-apiserver
+  namespace: kubesphere-monitoring-system
+spec:
+  jobLabel: ks-apiserver
+  endpoints:
+  - interval: 1m
+    path: /kapis/metrics
+    relabelings:
+    - action: labeldrop
+      regex: (endpoint)
+  selector:
+    matchLabels:
+      app: ks-apiserver
+  namespaceSelector:
+    matchNames:
+    - kubesphere-system
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  labels:
+    app.kubernetes.io/vendor: kubesphere
+    thanos-ruler: kubesphere
+  name: thanosruler
+  namespace: kubesphere-monitoring-system
+spec:
+  endpoints:
+  - interval: 1m
+    port: web
+    relabelings:
+    - action: labeldrop
+      regex: (service|endpoint)
+  selector:
+    matchLabels:
+      operated-thanos-ruler: "true"
+  namespaceSelector:
+    matchNames:
+    - kubesphere-monitoring-system
