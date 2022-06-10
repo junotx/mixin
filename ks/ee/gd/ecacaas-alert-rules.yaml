@@ -1,0 +1,586 @@
+# The following contents refer to https://www.kdocs.cn/l/cshlutMKE3FW
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    role: alert-rules
+    prometheus: k8s
+  name: ecacaas-k8s-alert-rules
+  namespace: kubesphere-monitoring-system
+spec:
+  groups: 
+  - name: kubernetes-system-kubelet
+    rules:
+    - alert: KubeNodeNotReady
+      annotations:
+        message: '{{ $labels.node }} has been unready for more than 15 minutes.'
+        runbook_url: https://github.com/kubernetes-monitoring/kubernetes-mixin/tree/master/runbook.md#alert-name-kubenodenotready
+      expr: |
+        kube_node_status_condition{job="kube-state-metrics",condition="Ready",status="true"} == 0
+      for: 15m
+      labels:
+        severity: warning
+    - alert: KubeletTooManyPods
+      annotations:
+        message: Kubelet '{{ $labels.node }}' is running at {{ $value | humanizePercentage
+          }} of its Pod capacity.
+        runbook_url: https://github.com/kubernetes-monitoring/kubernetes-mixin/tree/master/runbook.md#alert-name-kubelettoomanypods
+      expr: |
+        max(max(kubelet_running_pod_count{job="kubelet"}) by(instance) * on(instance) group_left(node) kubelet_node_name{job="kubelet"}) by(node) / max(kube_node_status_capacity_pods{job="kube-state-metrics"} != 1) by(node) > 0.95
+      for: 15m
+      labels:
+        severity: warning
+    - alert: KubeTooManyNodesNotReady
+      annotations:
+        message: |
+          {{ $value | humanizePercentage }} of nodes are unready.
+      expr: |
+        cluster:node_offline:ratio > 0.1
+      for: 10m
+      labels:
+        severity: critical
+    - alert: KubeletDown
+      annotations:
+        message: Kubelet has disappeared from Prometheus target discovery.
+        runbook_url: https://github.com/kubernetes-monitoring/kubernetes-mixin/tree/master/runbook.md#alert-name-kubeletdown
+      expr: |
+        absent(up{job="kubelet"} == 1)
+      for: 15m
+      labels:
+        severity: warning
+    - alert: KubeletPlegDurationHigh
+      annotations:
+        message: The Kubelet Pod Lifecycle Event Generator has a 99th percentile duration
+          of {{ $value }} seconds on node {{ $labels.node }}.
+        runbook_url: https://github.com/kubernetes-monitoring/kubernetes-mixin/tree/master/runbook.md#alert-name-kubeletplegdurationhigh
+      expr: |
+        node_quantile:kubelet_pleg_relist_duration_seconds:histogram_quantile{quantile="0.99"} >= 10
+      for: 5m
+      labels:
+        severity: warning
+  - name: node
+    rules: 
+    - alert: NodeHighNumberOfAbnormalPods
+      expr: |
+        node:pod_abnormal:ratio > 0.5
+      for: 5m
+      labels:
+        severity: error
+      annotations:
+        message: |
+          {{ $value | humanizePercentage }} of the pods on node {{ $labels.node }} are abnormal.   
+    - alert: NodeCpuUtilisationHigh
+      expr: |
+        node:node_cpu_utilisation:avg1m > 0.95
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        message: Node {{ $labels.node }} is using {{ $value | humanizePercentage }} of its cpu.
+    - alert: NodeMemoryUtilisationHigh
+      expr: |
+        node:node_memory_utilisation: > 0.9
+      annotations:
+        summary: node memory utilisation is high
+        message: |
+          Node {{ $labels.node }} ({{ $labels.host_ip }}) is using {{ $value | humanizePercentage }} of its memory.
+      for: 10m
+      labels: 
+        severity: error
+  - name: node-exporter
+    rules:
+    - alert: NodeClockSkewDetected
+      annotations:
+        description: Clock on {{ $labels.instance }} is out of sync by more than 300s. Ensure NTP is configured correctly on this host.
+        summary: Clock skew detected.
+      expr: |
+        (
+          node_timex_offset_seconds > 0.05
+        and
+          deriv(node_timex_offset_seconds[5m]) >= 0
+        )
+        or
+        (
+          node_timex_offset_seconds < -0.05
+        and
+          deriv(node_timex_offset_seconds[5m]) <= 0
+        )
+      for: 10m
+      labels:
+        severity: error
+    - alert: NodeFilesystemSpaceFillingUp
+      annotations:
+        description: Filesystem on {{ $labels.device }} at {{ $labels.instance }}
+          has only {{ printf "%.2f" $value }}% available space left and is filling
+          up.
+        runbook_url: https://github.com/kubernetes-monitoring/kubernetes-mixin/tree/master/runbook.md#alert-name-nodefilesystemspacefillingup
+        summary: Filesystem is predicted to run out of space within the next 24 hours.
+      expr: |
+        (
+          node_filesystem_avail_bytes{job=~"node-exporter|node-exporter-external|elk-node-exporter-external",fstype!=""} / node_filesystem_size_bytes{job=~"node-exporter|node-exporter-external|elk-node-exporter-external",fstype!=""} * 100 < 40
+        and
+          predict_linear(node_filesystem_avail_bytes{job=~"node-exporter|node-exporter-external|elk-node-exporter-external",fstype!=""}[6h], 24*60*60) < 0
+        and
+          node_filesystem_readonly{job=~"node-exporter|node-exporter-external|elk-node-exporter-external",fstype!=""} == 0
+        )
+      for: 1h
+      labels:
+        severity: warning
+    - alert: NodeFilesystemAlmostOutOfSpace
+      annotations:
+        description: Filesystem on {{ $labels.device }} at {{ $labels.instance }}
+          has only {{ printf "%.2f" $value }}% available space left.
+        runbook_url: https://github.com/kubernetes-monitoring/kubernetes-mixin/tree/master/runbook.md#alert-name-nodefilesystemalmostoutofspace
+        summary: Filesystem has less than 3% space left.
+      expr: |
+        (
+          node_filesystem_avail_bytes{job=~"node-exporter|node-exporter-external|elk-node-exporter-external",fstype!=""} / node_filesystem_size_bytes{job=~"node-exporter|node-exporter-external|elk-node-exporter-external",fstype!=""} * 100 < 3
+        and
+          node_filesystem_readonly{job=~"node-exporter|node-exporter-external|elk-node-exporter-external",fstype!=""} == 0
+        )
+      for: 1h
+      labels:
+        severity: error
+    - alert: NodeFilesystemFilesFillingUp
+      annotations:
+        description: Filesystem on {{ $labels.device }} at {{ $labels.instance }}
+          has only {{ printf "%.2f" $value }}% available inodes left and is filling
+          up fast.
+        runbook_url: https://github.com/kubernetes-monitoring/kubernetes-mixin/tree/master/runbook.md#alert-name-nodefilesystemfilesfillingup
+        summary: Filesystem is predicted to run out of inodes within the next 4 hours.
+      expr: |
+        (
+          node_filesystem_files_free{job=~"node-exporter|node-exporter-external|elk-node-exporter-external",fstype!=""} / node_filesystem_files{job=~"node-exporter|node-exporter-external|elk-node-exporter-external",fstype!=""} * 100 < 20
+        and
+          predict_linear(node_filesystem_files_free{job=~"node-exporter|node-exporter-external|elk-node-exporter-external",fstype!=""}[6h], 4*60*60) < 0
+        and
+          node_filesystem_readonly{job=~"node-exporter|node-exporter-external|elk-node-exporter-external",fstype!=""} == 0
+        )
+      for: 1h
+      labels:
+        severity: warning
+    - alert: NodeFilesystemAlmostOutOfFiles
+      annotations:
+        description: Filesystem on {{ $labels.device }} at {{ $labels.instance }}
+          has only {{ printf "%.2f" $value }}% available inodes left.
+        runbook_url: https://github.com/kubernetes-monitoring/kubernetes-mixin/tree/master/runbook.md#alert-name-nodefilesystemalmostoutoffiles
+        summary: Filesystem has less than 3% inodes left.
+      expr: |
+        (
+          node_filesystem_files_free{job=~"node-exporter|node-exporter-external|elk-node-exporter-external",fstype!=""} / node_filesystem_files{job=~"node-exporter|node-exporter-external|elk-node-exporter-external",fstype!=""} * 100 < 3
+        and
+          node_filesystem_readonly{job=~"node-exporter|node-exporter-external|elk-node-exporter-external",fstype!=""} == 0
+        )
+      for: 1h
+      labels:
+        severity: error
+    - alert: NodeNetworkReceiveErrs
+      annotations:
+        description: '{{ $labels.instance }} interface {{ $labels.device }} has encountered
+          {{ printf "%.0f" $value }} receive errors in the last two minutes.'
+        runbook_url: https://github.com/kubernetes-monitoring/kubernetes-mixin/tree/master/runbook.md#alert-name-nodenetworkreceiveerrs
+        summary: Network interface is reporting many receive errors.
+      expr: |
+        increase(node_network_receive_errs_total[2m]) > 10
+      for: 1h
+      labels:
+        severity: warning
+    - alert: NodeNetworkTransmitErrs
+      annotations:
+        description: '{{ $labels.instance }} interface {{ $labels.device }} has encountered
+          {{ printf "%.0f" $value }} transmit errors in the last two minutes.'
+        runbook_url: https://github.com/kubernetes-monitoring/kubernetes-mixin/tree/master/runbook.md#alert-name-nodenetworktransmiterrs
+        summary: Network interface is reporting many transmit errors.
+      expr: |
+        increase(node_network_transmit_errs_total[2m]) > 10
+      for: 1h
+      labels:
+        severity: warning
+  - name: kubernetes-system-apiserver
+    rules:
+    - alert: KubeAPIDown
+      annotations:
+        message: KubeAPI has disappeared from Prometheus target discovery.
+        runbook_url: https://github.com/kubernetes-monitoring/kubernetes-mixin/tree/master/runbook.md#alert-name-kubeapidown
+      expr: |
+        absent(up{job="apiserver"} == 1)
+      for: 15m
+      labels:
+        severity: error
+    - alert: AggregatedAPIDown
+      annotations:
+        message: An aggregated API {{ $labels.name }}/{{ $labels.namespace }} is down.
+          It has not been available at least for the past five minutes.
+        runbook_url: https://github.com/kubernetes-monitoring/kubernetes-mixin/tree/master/runbook.md#alert-name-aggregatedapidown
+      expr: |
+        sum by(name, namespace)(sum_over_time(aggregator_unavailable_apiservice[5m])) > 0
+      for: 5m
+      labels:
+        severity: warning
+    - alert: KubeClientCertificateExpiration
+      annotations:
+        message: A client certificate used to authenticate to the apiserver is expiring
+          in less than 7.0 days.
+        runbook_url: https://github.com/kubernetes-monitoring/kubernetes-mixin/tree/master/runbook.md#alert-name-kubeclientcertificateexpiration
+      expr: |
+        apiserver_client_certificate_expiration_seconds_count{job="apiserver"} > 0 and on(job) histogram_quantile(0.01, sum by (job, le) (rate(apiserver_client_certificate_expiration_seconds_bucket{job="apiserver"}[5m]))) < 604800
+      labels:
+        severity: warning
+    - alert: KubeClientCertificateExpiration
+      annotations:
+        message: A client certificate used to authenticate to the apiserver is expiring
+          in less than 24.0 hours.
+        runbook_url: https://github.com/kubernetes-monitoring/kubernetes-mixin/tree/master/runbook.md#alert-name-kubeclientcertificateexpiration
+      expr: |
+        apiserver_client_certificate_expiration_seconds_count{job="apiserver"} > 0 and on(job) histogram_quantile(0.01, sum by (job, le) (rate(apiserver_client_certificate_expiration_seconds_bucket{job="apiserver"}[5m]))) < 86400
+      labels:
+        severity: error
+    - alert: KubeAPIErrorBudgetBurn
+      annotations:
+        message: The API server is burning too much error budget
+        runbook_url: https://github.com/kubernetes-monitoring/kubernetes-mixin/tree/master/runbook.md#alert-name-kubeapierrorbudgetburn
+      expr: |
+        sum(apiserver_request:burnrate1d) > (3.00 * 0.01000)
+        and
+        sum(apiserver_request:burnrate2h) > (3.00 * 0.01000)
+      for: 1h
+      labels:
+        severity: warning
+    - alert: KubeAPIErrorBudgetBurn
+      annotations:
+        message: The API server is burning too much error budget
+        runbook_url: https://github.com/kubernetes-monitoring/kubernetes-mixin/tree/master/runbook.md#alert-name-kubeapierrorbudgetburn
+      expr: |
+        sum(apiserver_request:burnrate6h) > (8.00 * 0.01000)
+        and
+        sum(apiserver_request:burnrate30m) > (8.00 * 0.01000)
+      for: 15m
+      labels:
+        severity: error
+  - name: kubernetes-system-scheduler
+    rules:
+    - alert: KubeSchedulerDown
+      annotations:
+        message: KubeScheduler has disappeared from Prometheus target discovery.
+        runbook_url: https://github.com/kubernetes-monitoring/kubernetes-mixin/tree/master/runbook.md#alert-name-kubeschedulerdown
+      expr: |
+        absent(up{job="kube-scheduler"} == 1)
+      for: 15m
+      labels:
+        severity: warning
+  - name: kubernetes-system-controller-manager
+    rules:
+    - alert: KubeControllerManagerDown
+      annotations:
+        message: KubeControllerManager has disappeared from Prometheus target discovery.
+        runbook_url: https://github.com/kubernetes-monitoring/kubernetes-mixin/tree/master/runbook.md#alert-name-kubecontrollermanagerdown
+      expr: |
+        absent(up{job="kube-controller-manager"} == 1)
+      for: 15m
+      labels:
+        severity: warning
+  - name: kube-state-metrics
+    rules:
+    - alert: KubeStateMetricsListErrors
+      annotations:
+        message: kube-state-metrics is experiencing errors at an elevated rate in
+          list operations. This is likely causing it to not be able to expose metrics
+          about Kubernetes objects correctly or at all.
+        runbook_url: https://github.com/kubernetes-monitoring/kubernetes-mixin/tree/master/runbook.md#alert-name-kubestatemetricslisterrors
+      expr: |
+        (sum(rate(kube_state_metrics_list_total{job="kube-state-metrics",result="error"}[5m]))
+          /
+        sum(rate(kube_state_metrics_list_total{job="kube-state-metrics"}[5m])))
+        > 0.01
+      for: 15m
+      labels:
+        severity: warning
+    - alert: KubeStateMetricsWatchErrors
+      annotations:
+        message: kube-state-metrics is experiencing errors at an elevated rate in
+          watch operations. This is likely causing it to not be able to expose metrics
+          about Kubernetes objects correctly or at all.
+        runbook_url: https://github.com/kubernetes-monitoring/kubernetes-mixin/tree/master/runbook.md#alert-name-kubestatemetricswatcherrors
+      expr: |
+        (sum(rate(kube_state_metrics_watch_total{job="kube-state-metrics",result="error"}[5m]))
+          /
+        sum(rate(kube_state_metrics_watch_total{job="kube-state-metrics"}[5m])))
+        > 0.01
+      for: 15m
+      labels:
+        severity: warning
+  - name: kubernetes-apps
+    rules:
+    - alert: KubePodCrashLooping
+      annotations:
+        message: Pod {{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container
+          }}) is restarting {{ printf "%.2f" $value }} times / 5 minutes.
+        runbook_url: https://github.com/kubernetes-monitoring/kubernetes-mixin/tree/master/runbook.md#alert-name-kubepodcrashlooping
+      expr: |
+        rate(kube_pod_container_status_restarts_total{job="kube-state-metrics",namespace=~"kube-.*|kubesphere-.*|trident|yunshan-deepflow|ump|orion|f5-bigip-ctlr|operators"}[15m]) * 60 * 5 > 0
+      for: 15m
+      labels:
+        severity: warning
+    - alert: KubeTooMayPodsCrashLooping
+      annotations:
+        message: |
+          {{ $value | humanizePercentage }} of the containers accross the cluster are frequently restarting.
+      expr: |
+        count(rate(kube_pod_container_status_restarts_total{job="kube-state-metrics"}[15m]) * 60 * 5 > 0) /
+        count(kube_pod_container_status_restarts_total{job="kube-state-metrics"}) > 0.2
+      for: 15m
+      labels:
+        severity: critical
+    - alert: KubePodNotReady
+      annotations:
+        message: Pod {{ $labels.namespace }}/{{ $labels.pod }} has been in a non-ready
+          state for longer than 15 minutes.
+        runbook_url: https://github.com/kubernetes-monitoring/kubernetes-mixin/tree/master/runbook.md#alert-name-kubepodnotready
+      expr: |
+        sum by (namespace, pod) (max by(namespace, pod) (kube_pod_status_phase{job="kube-state-metrics", phase=~"Pending|Unknown",namespace=~"kube-.*|kubesphere-.*|trident|yunshan-deepflow|ump|orion|f5-bigip-ctlr|operators"}) * on(namespace, pod) group_left(owner_kind) max by(namespace, pod, owner_kind) (kube_pod_owner{owner_kind!="Job",namespace=~"kube-.*|kubesphere-.*|trident|yunshan-deepflow|ump|orion|f5-bigip-ctlr|operators"})) > 0
+      for: 15m
+      labels:
+        severity: warning
+  - name: kubernetes-storage
+    rules:
+    - alert: KubePersistentVolumeErrors
+      annotations:
+        message: The persistent volume {{ $labels.persistentvolume }} has status {{
+          $labels.phase }}.
+        runbook_url: https://github.com/kubernetes-monitoring/kubernetes-mixin/tree/master/runbook.md#alert-name-kubepersistentvolumeerrors
+      expr: |
+        kube_persistentvolume_status_phase{phase=~"Failed|Pending",job="kube-state-metrics",namespace=~"kube-.*|kubesphere-.*|trident|yunshan-deepflow|ump|orion|f5-bigip-ctlr|operators"} > 0
+      for: 5m
+      labels:
+        severity: error
+    - alert: KubeTooManyPersistentVolumesErrors
+      annotations:
+        message: |
+          {{ $value | humanizePercentage }} of the persistent volumes accross the cluster are with "Failed|Pending" status.
+        runbook_url: https://github.com/kubernetes-monitoring/kubernetes-mixin/tree/master/runbook.md#alert-name-kubepersistentvolumeerrors
+      expr: |
+        count(kube_persistentvolume_status_phase{phase=~"Failed|Pending",job="kube-state-metrics",namespace=~"kube-.*|kubesphere-.*|trident|yunshan-deepflow|ump|orion|f5-bigip-ctlr|operators"} > 0) /  count(count by (persistentvolume) (kube_persistentvolume_status_phase{job="kube-state-metrics"})) > 0.5
+      for: 5m
+      labels:
+        severity: error
+
+---
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    role: alert-rules
+    prometheus: k8s
+  name: ecacaas-kubesphere-alert-rules
+  namespace: kubesphere-monitoring-system
+spec:
+  groups: 
+  - name: kubesphere
+    rules:
+    - alert: container-cpu-running-full
+      annotations:
+        summary: container cpu usage will run full
+        message: |
+          pod {{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container}} with {{ $value }}% cpu utilization will hit the limit.
+      expr: |
+        100 * irate(container_cpu_usage_seconds_total{job="kubelet",pod!="",image!="",container!~"|POD",namespace=~"kube-.*|kubesphere-.*|trident|yunshan-deepflow|ump|orion|f5-bigip-ctlr|operators"}[5m]) / on(namespace,pod,container) kube_pod_container_resource_limits{resource="cpu",namespace=~"kube-.*|kubesphere-.*|trident|yunshan-deepflow|ump|orion|f5-bigip-ctlr|operators"} > 95
+      for: 5m
+      labels:
+        severity: warning
+    - alert: container-memory-running-full
+      annotations:
+        summary: container memory usage will run full
+        message: |
+          pod {{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container}} with {{ $value | humanizePercentage }} memory utilization will hit the limit.
+      expr: |
+        container_memory_working_set_bytes{job="kubelet",pod!="",image!="",container!~"|POD",namespace=~"kube-.*|kubesphere-.*|trident|yunshan-deepflow|ump|orion|f5-bigip-ctlr|operators"} / on(namespace,pod,container) kube_pod_container_resource_limits{resource="memory",namespace=~"kube-.*|kubesphere-.*|trident|yunshan-deepflow|ump|orion|f5-bigip-ctlr|operators"} > 0.9
+      for: 5m
+      labels:
+        severity: warning
+
+---
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    role: alert-rules
+    prometheus: k8s
+  name: ecacaas-etcd-alert-rules
+  namespace: kubesphere-monitoring-system
+spec:
+  groups: 
+  - name: etcd
+    rules:
+    - alert: etcdMembersDown
+      annotations:
+        message: 'etcd cluster "{{ $labels.job }}": members are down ({{ $value }}).'
+      expr: |
+        max by (job) (
+          sum by (job) (up{job=~".*etcd.*"} == bool 0)
+        or
+          count by (job,endpoint) (
+            sum by (job,endpoint,To) (rate(etcd_network_peer_sent_failures_total{job=~".*etcd.*"}[3m])) > 0.01
+          )
+        )
+        > 0
+      for: 3m
+      labels:
+        severity: critical
+    - alert: etcdInsufficientMembers
+      annotations:
+        message: 'etcd cluster "{{ $labels.job }}": insufficient members ({{ $value
+          }}).'
+      expr: |
+        sum(up{job=~".*etcd.*"} == bool 1) by (job) < ((count(up{job=~".*etcd.*"}) by (job) + 1) / 2)
+      for: 3m
+      labels:
+        severity: critical
+    - alert: etcdNoLeader
+      annotations:
+        message: 'etcd cluster "{{ $labels.job }}": member {{ $labels.instance }}
+          has no leader.'
+      expr: |
+        etcd_server_has_leader{job=~".*etcd.*"} == 0
+      for: 1m
+      labels:
+        severity: critical
+    - alert: etcdHighNumberOfLeaderChanges
+      annotations:
+        message: 'etcd cluster "{{ $labels.job }}": {{ $value }} leader changes within
+          the last 15 minutes. Frequent elections may be a sign of insufficient resources,
+          high network latency, or disruptions by other components and should be investigated.'
+      expr: |
+        increase((max by (job) (etcd_server_leader_changes_seen_total{job=~".*etcd.*"}) or 0*absent(etcd_server_leader_changes_seen_total{job=~".*etcd.*"}))[15m:1m]) >= 3
+      for: 5m
+      labels:
+        severity: warning
+    - alert: etcdHighNumberOfFailedGRPCRequests
+      annotations:
+        message: 'etcd cluster "{{ $labels.job }}": {{ $value }}% of requests for
+          {{ $labels.grpc_method }} failed on etcd instance {{ $labels.instance }}.'
+      expr: |
+        100 * sum(rate(grpc_server_handled_total{job=~".*etcd.*", grpc_code!="OK",grpc_service!="etcdserverpb.Watch"}[5m])) BY (job, instance, grpc_service, grpc_method)
+          /
+        sum(rate(grpc_server_handled_total{job=~".*etcd.*",grpc_service!="etcdserverpb.Watch"}[5m])) BY (job, instance, grpc_service, grpc_method)
+          > 8
+      for: 5m
+      labels:
+        severity: error
+    - alert: etcdGRPCRequestsSlow
+      annotations:
+        message: 'etcd cluster "{{ $labels.job }}": gRPC requests to {{ $labels.grpc_method
+          }} are taking {{ $value }}s on etcd instance {{ $labels.instance }}.'
+      expr: |
+        histogram_quantile(0.99, sum(rate(grpc_server_handling_seconds_bucket{job=~".*etcd.*", grpc_type="unary"}[5m])) by (job, instance, grpc_service, grpc_method, le))
+        > 0.15
+      for: 10m
+      labels:
+        severity: warning
+    - alert: etcdHighNumberOfFailedHTTPRequests
+      annotations:
+        message: '{{ $value }}% of requests for {{ $labels.method }} failed on etcd
+          instance {{ $labels.instance }}.'
+      expr: |
+        sum(rate(etcd_http_failed_total{job=~".*etcd.*", code!="404"}[5m])) BY (method) / sum(rate(etcd_http_received_total{job=~".*etcd.*"}[5m]))
+        BY (method) > 0.08
+      for: 10m
+      labels:
+        severity: error
+  - name: etcd-node-resources
+    rules: 
+    - alert: EtcdNodeCpuUtilisationHigh
+      expr: |
+        etcd_node:node_cpu_utilisation:mean5m > 0.9
+      annotations:
+        summary: Etcd node cpu utilisation is high
+        message: |
+          Etcd node {{ $labels.node }} is using {{ $value | humanizePercentage }} of its cpu.
+      for: 10m
+      labels: 
+        severity: warning
+    - alert: EtcdNodeMemoryUtilisationHigh
+      expr: |
+        etcd_node:node_memory_utilisation: > 0.8
+      annotations:
+        summary: Etcd node memory utilisation is high
+        message: |
+          Etcd node {{ $labels.node }} is using {{ $value | humanizePercentage }} of its memory.
+      for: 10m
+      labels: 
+        severity: warning
+
+--- 
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    role: alert-rules
+    prometheus: k8s
+  name: ecacaas-elk-alert-rules
+  namespace: kubesphere-monitoring-system
+spec:
+  groups: 
+  - name: elk-node-resources
+    rules: 
+    - alert: ElkNodeCpuUtilisationHigh
+      expr: |
+        elk_node:node_cpu_utilisation:mean5m > 0.9
+      annotations:
+        summary: ELK node cpu utilisation is high
+        message: |
+          ELK node {{ $labels.node }} is using {{ $value | humanizePercentage }} of its cpu.
+      for: 10m
+      labels: 
+        severity: warning
+    - alert: ElkNodeMemoryUtilisationHigh
+      expr: |
+        elk_node:node_memory_utilisation: > 0.8
+      annotations:
+        summary: ELK node memory utilisation is high
+        message: |
+          ELK node {{ $labels.node }} is using {{ $value | humanizePercentage }} of its memory.
+      for: 10m
+      labels: 
+        severity: warning
+    - alert: ElkNodeDiskUtilisationHigh
+      expr: |
+        (elasticsearch_filesystem_data_size_bytes{job="elasticsearch-exporter"} - 
+            elasticsearch_filesystem_data_free_bytes{job="elasticsearch-exporter"})
+        / elasticsearch_filesystem_data_size_bytes{job="elasticsearch-exporter"} > 0.9
+      annotations:
+        summary: ELK node memory utilisation is high
+        message: |
+          ELK node {{ $labels.node }} is using {{ $value | humanizePercentage }} of its disk.
+      for: 10m
+      labels: 
+        severity: warning
+    - alert: ElkNodeExporterDown
+      expr: | 
+        absent(up{job="elk-node-exporter-external"} == 1)
+      annotations:
+        message: elk node-exporter has disappeared from Prometheus target discovery
+      for: 10m
+      labels:
+        severity: error
+    - alert: ElkNodeNotEnough
+      expr: | 
+        count(up{job="elk-node-exporter-external"} == 0) / count(up{job="elk-node-exporter-external"}) > 0.5
+      annotations:
+        message: elk has not enough valid nodes.
+      for: 10m
+      labels:
+        severity: error
+    - alert: ElasticsearchClusterDown
+      expr: | 
+        absent(elasticsearch_cluster_health_up{job="elasticsearch-exporter-external"}==1) 
+        or 
+        elasticsearch_cluster_health_status{job="elasticsearch-exporter-external",color="red"} > 0
+      annotations:
+        message: elasticsearch cluster is down.
+      for: 10m
+      labels:
+        severity: error
